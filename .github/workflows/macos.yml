@@ -1,0 +1,76 @@
+name: macOS build and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipboard-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: SDK information
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Storage regression tests
+        run: ./test.sh
+      - name: Build universal DMG
+        run: ./package-dmg.sh
+      - name: Verify architecture and signature
+        run: |
+          xcrun lipo -verify_arch arm64 x86_64 "build/Brightery Clipboard.app/Contents/MacOS/Brightery Clipboard"
+          codesign --verify --strict "build/Brightery Clipboard.app"
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrighteryClipboard-universal
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: BrighteryClipboard-universal
+          path: dist
+      - name: Publish version if not already released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Info.plist)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving assets unchanged."
+            exit 0
+          fi
+          (cd dist && shasum -a 256 -c SHA256SUMS.txt)
+          gh release create "$TAG" "dist/BrighteryClipboard-$VERSION-universal.dmg" dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "Brightery Clipboard $VERSION" --prerelease \
+            --notes "Universal macOS 13+ installer (Apple Silicon and Intel). Storage tests and native compilation passed in CI. This preview is ad-hoc signed, not Developer ID notarized. Manual UI and paste integration testing is still required. Verify SHA256SUMS.txt before installing. See README and CHANGELOG for details."
