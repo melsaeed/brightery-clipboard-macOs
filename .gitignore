@@ -1,0 +1,13 @@
+build/
+dist/
+.build/
+.DS_Store
+*.xcuserstate
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.dmg
+*.p12
+*.mobileprovision
+.env
+.env.*
